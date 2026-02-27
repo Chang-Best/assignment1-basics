@@ -589,4 +589,79 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    
+    from pathlib import Path
+    import regex as re
+
+    text = input_path.read_text(encoding = "utf-8")
+
+    if special_tokens:
+        chunks = re.split("|".join(special_tokens), text)
+    else:
+        chunks = [text]
+
+    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+     
+    vocab_token = [bytes([i]) for i in range(256)] 
+    vocab_token += [s.encode("utf-8") for s in special_tokens]
+  
+    num_iter = vocab_size - len(vocab_token)
+    
+    corpus = {}
+    for chunk in chunks:
+        for m in re.finditer(PAT, chunk): 
+            token = m.group().encode("utf-8")
+            token_byte = tuple(bytes([b]) for b in token)
+            corpus[token_byte]= corpus.get(token_byte, 0) + 1 
+
+    merges = []
+
+    for _ in range(num_iter):  
+
+        pairs = {} 
+        for word, freq in corpus.items(): 
+            for i in range(len(word) - 1): 
+                pair = (word[i], word[i + 1]) 
+                pairs [pair] = pairs.get(pair, 0) + freq 
+
+        if not pairs: 
+            break
+        max_freq = max(pairs.values()) 
+        candidates = [p for p, f in pairs.items() if f == max_freq] 
+        best_pair = max(candidates) 
+
+        merges.append(best_pair) 
+
+        new_corpus = {} 
+        for word, freq in corpus.items(): 
+            new_word = [] 
+            i = 0 
+            while i < len(word): 
+                if i < len(word) - 1 and (word[i], word[i+1]) == best_pair: 
+                    new_word.append(word[i] + word[i+1])
+                    i += 2 
+                else: 
+                    new_word.append(word[i]) 
+                    i += 1 
+            
+            new_word = tuple(new_word) 
+            new_corpus[new_word] = new_corpus.get(new_word, 0) + freq 
+
+        corpus = new_corpus
+
+    vocab = {} 
+    idx = 0 
+    for s in special_tokens: 
+        vocab[idx] = s.encode("utf-8") 
+        idx += 1 
+
+    for i in range(256): 
+        vocab[idx] = bytes([i]) 
+        idx += 1 
+
+    for a, b in merges: 
+        new_token = a + b 
+        vocab[idx] = new_token 
+        idx += 1 
+
+    return (vocab, merges)
