@@ -564,8 +564,6 @@ def get_tokenizer(
 
 
 import os
-from pathlib import Path
-import regex as re
 
 def run_train_bpe(
     input_path: str | os.PathLike,
@@ -597,6 +595,7 @@ def run_train_bpe(
 
     from pathlib import Path
     import regex as re
+    import os
 
     text = Path(input_path).read_text(encoding="utf-8")
 
@@ -644,7 +643,7 @@ def run_train_bpe(
             if best_pair[0] not in word: # 快速跳过不含第一个字符的词
                 new_word = word
             else:
-                new__word = []
+                new_word = []
                 i = 0
                 while i < len(word):
                     if i < len(word) - 1 and (word[i], word[i+1]) == best_pair:
@@ -653,7 +652,7 @@ def run_train_bpe(
                     else:
                         new_word.append(word[i])
                         i += 1
-                new_word = tuple(new__word)
+                new_word = tuple(new_word)
             
             # 如果词发生了合并，我们需要更新 pairs 统计
             if new_word != word:
