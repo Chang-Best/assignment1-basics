@@ -559,7 +559,142 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    raise NotImplementedError
+    return Tokenizer(vocab, merges, special_tokens)
+
+
+
+class Tokenizer: 
+    def __init__(
+        self, 
+        vocab: dict[int, bytes], 
+        merges: list[tuple[bytes, bytes]], 
+        special_tokens: list[str] =None):
+
+        self.vocab = vocab
+        self.merges = merges 
+        self.special_tokens = special_tokens if special_tokens is not None else [] 
+        
+        # 题目要求的是输出 每个token 在vocab 中的id 
+        # 这里写的是idx, token 的一个转换函数
+        existing_tokens = {v: k for k, v in self.vocab.items()}
+        
+        for token_str in self.special_tokens:
+            token_bytes = token_str.encode("utf-8")
+            if token_bytes not in existing_tokens:
+                new_id = max(self.vocab.keys()) + 1 if self.vocab else 0
+                self.vocab[new_id] = token_bytes
+                existing_tokens[token_bytes] = new_id
+
+        byte_to_id = dict() 
+        for idx, token in self.vocab.items(): 
+            byte_to_id[token] = idx
+        self.byte_to_id = byte_to_id
+
+        self.merge_ranks = {pair: i for i, pair in enumerate(self.merges)}
+
+    # 只读取文件
+    @classmethod
+    def from_files (
+    cls, 
+    vocab_filepath:str, 
+    merges_filepath:str, 
+    special_tokens: list[str]=None): 
+        
+        import json
+
+        # 读取 vocab.json
+        with open(vocab_filepath, "r", encoding="utf-8") as f:
+            vocab_json = json.load(f)
+
+        vocab = {
+            int(idx): token.encode("utf-8")
+            for token, idx in vocab_json.items()
+        }
+
+        # 读取 merges.txt
+        merges = []
+            with open(merges_filepath, encoding="utf-8") as f:
+            merges = [
+                tuple(x.encode("utf-8") for x in line.split())
+                for line in f
+                if line and line[0] != "#"
+            ]
+
+        return cls(vocab, merges, special_tokens)
+    
+
+    def encode(self, text: str) -> list[int]: 
+        import regex as re 
+        # 1. 判断是否有special_token, 进行分词
+        if not self.special_tokens: 
+            chunks = [text]
+        else:
+            pattern = "(" + "|".join(re.escape(t) for t in self.special_tokens) + ")"
+            # 分词 chunks = {word phrase, special_token, word phrase}, 按照special_token进行分词
+            chunks = re.split(pattern, text) 
+
+        results = list() 
+        # 遍历chunk
+        for chunk in chunks: 
+            if chunk == "": 
+                continue
+            elif self.special_tokens and chunk in self.special_tokens: 
+                results.append(self.byte_to_id[chunk.encode("utf-8")])
+            else: 
+                # 排除special token 之后进行encode, 空格会也会被encode
+                byte_seq= chunk.encode("utf-8")
+                tokens = [bytes([b]) for b in byte_seq] 
+                # 只要这个tokens 里面存在可以merge 的就一直进行merge
+
+                while len(tokens) >= 2:
+                    candidate = None 
+                    candidate_pos = None
+                    candidate_index = float("inf") 
+
+                    for i in range(len(tokens) - 1): 
+                        pair = (tokens[i], tokens[i + 1]) 
+                        if pair in self.merges: 
+                            idx = self.merge_ranks.get(pair, float("inf"))
+                            if idx < candidate_index: 
+                                candidate_index = idx 
+                                candidate = pair 
+                                candidate_pos = i
+
+                    if candidate is None or candidate_index == float("inf"): 
+                        break
+                    # 3. token update, 转化成题目要求的token idx list 形式
+                    new_token = candidate[0] + candidate[1] 
+                    new_tokens_list = []
+                    i = 0
+                    while i < len(tokens):
+                        if i == candidate_pos:
+                            new_tokens_list.append(new_token)
+                            i += 2
+                        else:
+                            new_tokens_list.append(tokens[i])
+                            i += 1
+                    tokens = new_tokens_list
+
+                for tok in tokens: 
+                    results.append(self.byte_to_id[tok])
+
+        return results
+
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        # iterable 是一个可以用for 循环读取的字符串集合
+        # 逐个读取后, 放入encode 函数和进行解析, 然后生成token
+        for text in iterable:
+            for token in self.encode(text):
+                yield token
+
+
+    def decode(self, ids: list[int]) -> str:
+        decode_tokens = []
+        for i in ids: 
+            decode_tokens.append(self.vocab[i]) 
+        byte_strings = b"".join(decode_tokens)
+
+        return byte_strings.decode("utf-8", errors="replace")
 
 
 def run_train_bpe(
@@ -589,4 +724,94 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    from pathlib import Path
+    import regex as re
+    import os
+
+    text = Path(input_path).read_text(encoding="utf-8")
+
+    # 1. 切分 
+    if special_tokens:
+        chunks = re.split("|".join(map(re.escape, special_tokens)), text)
+    else:
+        chunks = [text]
+
+    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+    
+    # 2. 初始化 corpus:  {(word1的token):freq, (word2的token):freq}
+    corpus = {}
+    for chunk in chunks:
+        for m in re.finditer(PAT, chunk): 
+            token = m.group().encode("utf-8")
+            token_byte = tuple(bytes([b]) for b in token)
+            corpus[token_byte] = corpus.get(token_byte, 0) + 1 
+
+    # 3. 预统计所有 pairs 
+    # {(每个word 里面的token 两两配对 : freq)}
+    pairs = {}
+    for word, freq in corpus.items():
+        for i in range(len(word) - 1):
+            pair = (word[i], word[i+1])
+            pairs[pair] = pairs.get(pair, 0) + freq
+
+    merges = []
+    num_iter = vocab_size - 256 - len(special_tokens)
+
+    for _ in range(num_iter):
+        if not pairs:
+            break
+        
+        # 4. 找最高频 
+        max_freq = max(pairs.values())
+        candidates = [p for p, f in pairs.items() if f == max_freq]
+        best_pair = max(candidates) 
+
+        merges.append(best_pair)
+
+        # 5. 更新 corpus 和 pairs (局部更新)
+        new_corpus = {}
+        for word, freq in corpus.items():
+            if best_pair[0] not in word: # 快速跳过不含第一个字符的词
+                new_word = word
+            else:
+                new_word = []
+                i = 0
+                while i < len(word):
+                    if i < len(word) - 1 and (word[i], word[i+1]) == best_pair:
+                        new_word.append(word[i] + word[i+1])
+                        i += 2
+                    else:
+                        new_word.append(word[i])
+                        i += 1
+                new_word = tuple(new_word)
+            
+            # 如果词发生了合并，我们需要更新 pairs 统计
+            if new_word != word:
+                # 减去旧词的 pairs
+                for i in range(len(word) - 1):
+                    p = (word[i], word[i+1])
+                    pairs[p] -= freq
+                    if pairs[p] == 0: del pairs[p]
+                # 加上新词的 pairs
+                for i in range(len(new_word) - 1):
+                    p = (new_word[i], new_word[i+1])
+                    pairs[p] = pairs.get(p, 0) + freq
+            
+            new_corpus[new_word] = new_corpus.get(new_word, 0) + freq
+        
+        corpus = new_corpus
+
+    # 6. 生成 Vocab 
+    vocab = {} 
+    idx = 0 
+    for s in special_tokens: 
+        vocab[idx] = s.encode("utf-8") 
+        idx += 1 
+    for i in range(256): 
+        vocab[idx] = bytes([i]) 
+        idx += 1 
+    for a, b in merges: 
+        vocab[idx] = a + b 
+        idx += 1 
+
+    return (vocab, merges)
